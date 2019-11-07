@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:dart_dev/utils.dart';
+import 'package:io/io.dart';
 import 'package:logging/logging.dart';
+import 'package:pedantic/pedantic.dart';
 
 import '../dart_dev_tool.dart';
 import '../utils/assert_no_positional_args_nor_args_after_separator.dart';
@@ -34,6 +37,9 @@ class ProcessTool extends DevTool {
   final String _executable;
   final ProcessStartMode _mode;
 
+  BackgroundProcessTool backgrounded({Duration startAfterDelay}) =>
+      BackgroundProcessTool._(_executable, _args, _mode, startAfterDelay);
+
   @override
   FutureOr<int> run([DevToolExecutionContext context]) async {
     context ??= DevToolExecutionContext();
@@ -46,5 +52,60 @@ class ProcessTool extends DevTool {
     return runProcessAndEnsureExit(
         ProcessDeclaration(_executable, _args, mode: _mode),
         log: _log);
+  }
+}
+
+class BackgroundProcessTool {
+  final List<String> _args;
+  final String _executable;
+  final ProcessStartMode _mode;
+  final Duration _startAfterDelay;
+
+  BackgroundProcessTool._(
+      this._executable, this._args, this._mode, this._startAfterDelay);
+
+  DevTool get starter => DevTool.fromFunction(_start);
+
+  DevTool get stopper => DevTool.fromFunction(_stop);
+
+  Process _process;
+
+  bool _processHasExited = false;
+
+  Future<int> _start(DevToolExecutionContext context) async {
+    assertNoPositionalArgsNorArgsAfterSeparator(
+        context.argResults, context.usageException,
+        commandName: context.commandName);
+    logSubprocessHeader(_log, '$_executable ${_args.join(' ')}');
+
+    final mode = _mode ??
+        (context.verbose
+            ? ProcessStartMode.inheritStdio
+            : ProcessStartMode.normal);
+    _process = await Process.start(_executable, _args, mode: mode);
+    ensureProcessExit(_process);
+    unawaited(_process.exitCode.then((_) => _processHasExited = true));
+
+    if (_startAfterDelay != null) {
+      await Future<void>.delayed(_startAfterDelay);
+    }
+
+    if (_processHasExited) {
+      // If the background process exits immediately or before the start delay,
+      // something is probably wrong, so return that exit code.
+      return _process.exitCode;
+    }
+
+    return ExitCode.success.code;
+  }
+
+  Future<int> _stop(DevToolExecutionContext context) async {
+    assertNoPositionalArgsNorArgsAfterSeparator(
+        context.argResults, context.usageException,
+        commandName: context.commandName);
+    _log.info('Stopping: $_executable ${_args.join(' ')}');
+    _process?.kill();
+    await _process.exitCode;
+    return ExitCode.success.code;
   }
 }
